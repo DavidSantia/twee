@@ -1,109 +1,177 @@
 #!/usr/bin/env python
 
-import sys, os, getopt, glob
+import sys, os, getopt, glob, json
+import BaseHTTPServer
+
 scriptPath = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(scriptPath + os.sep + 'lib')
 from tiddlywiki import TiddlyWiki
 
 
 def usage():
-	print 'usage: twee [-a author] [-t target] [-m mergefile] [-r rss] source1 [source2..]'
+    print 'usage: twee [-a author] [-t target] [-m mergefile] [-i plugins] [-r rss] [-p port] [-s] source1 [source2..]'
 
 
-def main (argv):
+class Handler(BaseHTTPServer.BaseHTTPRequestHandler):
 
-	# defaults
-	
-	author = 'twee'
-	target = 'jonah'
-	merge = rss_output = ''
-	plugins = []
-	
-	# read command line switches
+    def do_GET(self):
+        if self.path == "/":
+            self.path = "/index.html"
+            try:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write("Twee JSON server")
+            except:
+                self.send_error(500)
+        else:
+            self.send_error(404)
 
-	try:
-		opts, args = getopt.getopt(argv, 'a:m:p:r:t:', ['author=', 'merge=', 'plugins=', 'rss=', 'target='])
-	except getopt.GetoptError:
-		usage()
-		sys.exit(2)
-   	
-	for opt, arg in opts:
-		if (opt in ('-a', '--author')):
-			author = arg
-		elif (opt in ('-m', '--merge')):
-			merge = arg
-		elif (opt in ('-p', '--plugins')):
-			plugins = arg.split(',')
-		elif (opt in ('-r', '--rss')):
-			rss_output = arg
-		elif (opt in ('-t', '--target')):
-			target = arg
-	
-	# construct a TW object
-	
-	tw = TiddlyWiki(author)
-	
-	# read in a file to be merged
-	
-	if merge != '':
-		file = open(merge)
-		tw.addHtml(file.read())
-		file.close()
-	
-	# read source files		
-	
-	sources = []
-	
-	for arg in args:
-		for file in glob.glob(arg):
-			sources.append(file)
-	
-	if len(sources) == 0:
-		print 'twee: no source files specified\n'
-		sys.exit(2)	
-	
-	for source in sources:
-		file = open(source)		
-		tw.addTwee(file.read())
-		file.close()
+    def do_POST(self):
+        if self.path == "/convert":
+            author = 'twee'
+            target = 'jonah'
+            content_length = int(self.headers['Content-Length'])
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+                valid = False
+                for key in data.keys():
+                    if (key == 'author'):
+                        author = data['author']
+                    elif (key == 'target'):
+                        target = data['target']
+                    elif (key == 'data'):
+                        valid = True
+                    else:
+                        print 'unsupported field:', key
+                        self.send_error(400)
+                        return
 
-	# generate RSS if requested
-	
-	if rss_output != '':
-		rss_file = open(rss_output, 'w')
-		tw.toRss().write_xml(rss_file)
-		rss_file.close()
-		
-	# output the target header
-	
-	if (target != 'none') and (target != 'plugin') and (target != 'json'):
-		file = open(scriptPath + os.sep + 'targets' + os.sep + target \
-								+ os.sep + 'header.html')
-		print(file.read())
-		file.close()
-	
-	# the tiddlers
-	
-	if (target == 'json'):
-		print tw.toJson()
-	else:
-		print tw.toHtml()
-	
-	# plugins
-	
-	for plugin in plugins:
-		if target != 'json':
-			file = open(scriptPath + os.sep + 'targets' + os.sep + target \
-									+ os.sep + 'plugins' + os.sep + plugin + os.sep + 'compiled.html')
-			print(file.read())
-			file.close()
-	
-	# and close it up
-	
-	if target != 'json':
-		print '</div></html>'
+                tw = TiddlyWiki(author)
+                if valid:
+                    tw.addTwee(data['data'])
+                else:
+                    print 'could not parse data field'
+                    self.send_error(400)
+                    return
+
+                # output the target header
+                if (target != 'none') and (target != 'plugin') and (target != 'json'):
+                    file = open(scriptPath + os.sep + 'targets' + os.sep + target + os.sep + 'header.html')
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(file.read())
+                    file.close()
+                else:
+                    print 'unsupported target field:', target
+                    self.send_error(400)
+            except:
+                self.send_error(400)
+        else:
+            self.send_error(404)
+
+def serve(port):
+    httpd = BaseHTTPServer.HTTPServer(("localhost", port), Handler)
+    print 'serving at port ' + str(port) + '\n'
+    httpd.serve_forever()
+
+
+def main(argv):
+    # defaults
+    author = 'twee'
+    target = 'jonah'
+    merge = rss_output = ''
+    plugins = []
+    port = 8080
+    server = False
+
+    # read command line switches
+    try:
+        opts, args = getopt.getopt(argv, 'a:m:i:r:t:p:s',
+                                   ['author=', 'merge=', 'plugins=', 'rss=', 'target=', 'port=', 'server'])
+
+    except getopt.GetoptError:
+        usage()
+        sys.exit(2)
+
+    for opt, arg in opts:
+        if (opt in ('-a', '--author')):
+            author = arg
+        elif (opt in ('-m', '--merge')):
+            merge = arg
+        elif (opt in ('-i', '--plugins')):
+            plugins = arg.split(',')
+        elif (opt in ('-r', '--rss')):
+            rss_output = arg
+        elif (opt in ('-t', '--target')):
+            target = arg
+        elif (opt in ('-p', '--port')):
+            port = int(arg)
+        elif (opt in ('-s', '--server')):
+            server = True
+
+
+    # HTTP server mode
+    if server:
+        serve(port)
+        sys.exit(0)
+
+    # construct a TW object
+    tw = TiddlyWiki(author)
+
+    # read in a file to be merged
+    if merge != '':
+        file = open(merge)
+        tw.addHtml(file.read())
+        file.close()
+
+    # read source files
+    sources = []
+
+    for arg in args:
+        for file in glob.glob(arg):
+            sources.append(file)
+
+    if len(sources) == 0:
+        print 'twee: no source files specified\n'
+        sys.exit(2)
+
+    for source in sources:
+        file = open(source)
+        tw.addTwee(file.read())
+        file.close()
+
+    # generate RSS if requested
+    if rss_output != '':
+        rss_file = open(rss_output, 'w')
+        tw.toRss().write_xml(rss_file)
+        rss_file.close()
+
+    # output the target header
+    if (target != 'none') and (target != 'plugin') and (target != 'json'):
+        file = open(scriptPath + os.sep + 'targets' + os.sep + target \
+                    + os.sep + 'header.html')
+        print(file.read())
+        file.close()
+
+    # the tiddlers
+    if (target == 'json'):
+        print tw.toJson()
+    else:
+        print tw.toHtml()
+
+    # plugins
+    for plugin in plugins:
+        if target != 'json':
+            file = open(scriptPath + os.sep + 'targets' + os.sep + target \
+                        + os.sep + 'plugins' + os.sep + plugin + os.sep + 'compiled.html')
+            print(file.read())
+            file.close()
+
+    # and close it up
+    if target != 'json':
+        print '</div></html>'
 
 
 if __name__ == '__main__':
-	main(sys.argv[1:])
-	
+    main(sys.argv[1:])
